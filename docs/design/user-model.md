@@ -128,10 +128,39 @@ class Visibility(enum.Enum):
 ### 6.3 Enforcement contract (for jischoi's profile API)
 When user **A** requests user **B**'s profile, the API returns a field iff:
 - field group is `public`, **or**
-- group is `friends` **and** A and B are accepted friends, **or**
+- group is `friends` **and** `are_friends(A, B)` is true (§7), **or**
 - group is `private` **and** A == B.
 
 `GET /users/{handle}` returns only the visible subset for the requester. `PATCH /users/me` lets a user update their own fields + their per-field visibility.
+
+### 6.4 Friend relationship model (powers the `friends` tier)
+A friendship is **one** relationship between two users, with a **direction** (who sent the request) and a **state** (pending → accepted/declined). We store it as a single row using **canonical ordering** — always `user_low = min(id)`, `user_high = max(id)` — so the `UNIQUE(user_low, user_high)` constraint makes duplicate / reversed requests (A→B *and* B→A) impossible at the DB level. Schema: `Friendship` in §7.
+
+The seam between this model and visibility is a single helper:
+
+```python
+async def are_friends(a, b) -> bool:
+    lo, hi = sorted([a, b])
+    row = await db.scalar(select(Friendship).where(
+        Friendship.user_low == lo,
+        Friendship.user_high == hi,
+        Friendship.status == "accepted",
+    ))
+    return row is not None
+```
+
+This is exactly what §6.3 calls for the `friends` tier — *aaduan-b* owns the model + `are_friends()`, *jischoi* calls it from the profile API.
+
+Flow → API (#5):
+
+| Action | What happens |
+|---|---|
+| Send request | Insert row, `status=pending`, `requested_by = sender` |
+| Accept | Only the **non-requester** may set `status=accepted` |
+| Decline | `status=declined` (kept, to allow blocking re-spam) |
+| Friend list | rows where you are `user_low` or `user_high` and `status=accepted` |
+
+`blocked` is reserved in the enum but block flows are deferred this milestone (same approach as 2FA).
 
 ---
 
@@ -194,6 +223,19 @@ class Session(Base):                   # refresh tokens + device log (V.6)
     revoked_at:         Mapped[datetime | None]
     created_at:         Mapped[datetime] = mapped_column(default=func.now())
     user:               Mapped["User"] = relationship(back_populates="sessions")
+
+
+class Friendship(Base):                # powers the FRIENDS visibility tier (§6.4)
+    __tablename__ = "friendships"
+    id:           Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    # canonical ordering: user_low = min(id), user_high = max(id) → no reversed duplicates
+    user_low:     Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    user_high:    Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    requested_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))   # direction
+    status:       Mapped[str] = mapped_column(String(20), default="pending")  # pending|accepted|declined|blocked
+    created_at:   Mapped[datetime] = mapped_column(default=func.now())
+    responded_at: Mapped[datetime | None]
+    __table_args__ = (UniqueConstraint("user_low", "user_high"),)
 ```
 
 **Tables owned by jischoi** (referenced, not defined here): `email_verification_tokens`, `password_reset_tokens` — both single-use, time-limited, FK → `users.id`. They flip `users.email_verified` / update `users.password_hash` respectively.
@@ -228,5 +270,6 @@ class Session(Base):                   # refresh tokens + device log (V.6)
 - [ ] jischoi agrees email-verified gate = hard block (no limited mode)
 - [ ] jischoi agrees access/refresh token split + `sessions` as the revocation/device-log home
 - [ ] aaduan-b owns `field_visibility` mechanism; jischoi's profile API consumes it (§6.3 contract)
+- [ ] friendship model (§6.4 / §7) agreed; `are_friends()` is the seam jischoi calls for the `friends` tier
 - [ ] handle rules confirmed (`[a-z0-9_]`, 3–30, case-insensitive unique)
 - [ ] 2FA fields reserved but no flow this milestone
