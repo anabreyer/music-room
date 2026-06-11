@@ -34,7 +34,7 @@
 > Note 2: Friend relationship API (aaduan-b) must be completed before jischoi can implement friends-only access control.
 > Note 3: aseisenb should use mock data for UI until backend APIs are ready.
 
-- [ ] [Shared] User model definition (auth fields + profile fields) — prior to all other work
+- [~] [Shared] User model definition (auth fields + profile fields) — prior to all other work · spec: `docs/design/user-model.md` (awaiting jischoi sign-off)
 - [ ] [aaduan-b] Profile data structure: public / friends-only / private fields
 - [ ] [aaduan-b] Profile: music preferences data structure
 - [ ] [aaduan-b] Friend relationship data model
